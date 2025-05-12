@@ -1,0 +1,19 @@
+{
+  "name": "p2p-web-app",
+  "version": "1.0.0",
+  "main": "main.js",
+  "type": "module",
+  "scripts": {
+    "bundle": "esbuild index.ts peer-connection.ts --bundle --outdir=dist"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "p2p-signal": "file:../p2p-signal/"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.4"
+  }
+}

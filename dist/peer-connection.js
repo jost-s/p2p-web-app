@@ -123,8 +123,8 @@
         webSocket.addEventListener("open", () => {
           webSocket.removeEventListener("error", connectionErrorHandler);
           console.log("Signaling client connected to", webSocket.url);
-          const signalingClient2 = new _SignalingClient(webSocket, agent);
-          resolve(signalingClient2);
+          const signalingClient = new _SignalingClient(webSocket, agent);
+          resolve(signalingClient);
         }, { once: true });
         webSocket.addEventListener("error", connectionErrorHandler, {
           once: true
@@ -259,92 +259,190 @@
   // ../p2p-signal/lib/server.js
   var import_ws = __toESM(require_browser(), 1);
 
-  // peer-connection.ts
-  var signalingClient;
-  var getAllAgentsPolling;
-  var rtcConnections = /* @__PURE__ */ new Map();
-  var announce = async () => {
-    await signalingClient.announce();
-    const allAgents = await signalingClient.getAllAgents();
-    console.log("all agents", allAgents);
+  // p2p-client.ts
+  var ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
+  var P2PClient = class _P2PClient {
+    agent;
+    rtcConnections;
+    signalingClient;
+    constructor(signalingClient, agent) {
+      this.agent = agent;
+      this.rtcConnections = /* @__PURE__ */ new Map();
+      this.signalingClient = signalingClient;
+    }
+    static async connect(agent) {
+      const signalingClient = await SignalingClient.connect(
+        new URL("ws://localhost:9000"),
+        agent
+      );
+      const p2pClient2 = new _P2PClient(signalingClient, agent);
+      p2pClient2.listenToSignalingEvents();
+      return p2pClient2;
+    }
+    announce() {
+      return this.signalingClient.announce();
+    }
+    getAllAgents() {
+      return this.signalingClient.getAllAgents();
+    }
+    getConnectionWithAgent(agentId) {
+      return this.rtcConnections.get(agentId);
+    }
+    async initiateConnectionWithAgent(agentId) {
+      const rtcConnection = new RTCPeerConnection({
+        iceServers: ICE_SERVERS
+      });
+      this.listenToRtcConnectionEventsFromAgent(rtcConnection, agentId);
+      const dataChannel = rtcConnection.createDataChannel(agentId);
+      dataChannel.addEventListener("open", (event) => {
+        console.log("datachannel opened with", agentId);
+      });
+      this.rtcConnections.set(agentId, {
+        rtc: rtcConnection,
+        dataChannel,
+        open: false
+      });
+      const offer = await rtcConnection.createOffer();
+      await rtcConnection.setLocalDescription(offer);
+      await this.signalingClient.sendOffer(agentId, offer);
+    }
+    listenToSignalingEvents() {
+      this.signalingClient.addSignalingListener(
+        SignalingType.Offer,
+        async (signalingMessage) => {
+          if (signalingMessage.signaling.type !== SignalingType.Offer) {
+            console.error("Received an answer as an offer", signalingMessage);
+            return;
+          }
+          const { sender, offer } = signalingMessage.signaling.data;
+          console.log("received signaling offer from", sender);
+          if (!this.rtcConnections.has(sender)) {
+            const rtcConnection = new RTCPeerConnection({
+              iceServers: ICE_SERVERS
+            });
+            this.listenToRtcConnectionEventsFromAgent(rtcConnection, sender);
+            const dataChannel = rtcConnection.createDataChannel(sender);
+            dataChannel.addEventListener("open", (event) => {
+              console.log("datahannel opened with", sender);
+            });
+            this.rtcConnections.set(sender, {
+              rtc: rtcConnection,
+              dataChannel,
+              open: false
+            });
+            await rtcConnection.setRemoteDescription(offer);
+            const answer = await rtcConnection.createAnswer();
+            await rtcConnection.setLocalDescription(answer);
+            const response = await this.signalingClient.sendAnswer(
+              sender,
+              answer
+            );
+            console.log("sent answer to agent", sender, "response", response);
+          }
+        }
+      );
+      this.signalingClient.addSignalingListener(
+        SignalingType.Answer,
+        async (signalingMessage) => {
+          if (signalingMessage.signaling.type !== SignalingType.Answer) {
+            console.error("Received an offer as an answer", signalingMessage);
+            return;
+          }
+          const { sender, answer } = signalingMessage.signaling.data;
+          console.log("received signaling answer from", sender);
+          const rtcConnection = this.rtcConnections.get(sender)?.rtc;
+          if (!rtcConnection) {
+            console.error("Received an answer without an offer from", sender);
+            return;
+          }
+          await rtcConnection.setRemoteDescription(answer);
+        }
+      );
+      this.signalingClient.addSignalingListener(
+        SignalingType.IceCandidate,
+        async (signalingMessage) => {
+          if (signalingMessage.signaling.type !== SignalingType.IceCandidate) {
+            console.error(
+              "Received an ICE candidate as something else",
+              signalingMessage
+            );
+            return;
+          }
+          const { sender, iceCandidate } = signalingMessage.signaling.data;
+          console.log("received signaling ice candidate from", sender);
+          const rtcConnection = this.rtcConnections.get(sender)?.rtc;
+          console.log("has rtc conne", !!rtcConnection);
+          if (!rtcConnection) {
+            console.error(
+              "Received an ICE candidate without offer or answer from",
+              sender
+            );
+            return;
+          }
+          await rtcConnection.addIceCandidate(iceCandidate);
+        }
+      );
+    }
+    listenToRtcConnectionEventsFromAgent(rtcConnection, agentId) {
+      rtcConnection.addEventListener("connectionstatechange", (event) => {
+        console.log(
+          this.signalingClient.agent.name,
+          "connectionstatechanged",
+          event.type,
+          rtcConnection.connectionState
+        );
+        const conn = this.rtcConnections.get(agentId);
+        if (conn) {
+          if (rtcConnection.connectionState === "connected") {
+            conn.open = true;
+          } else if (rtcConnection.connectionState === "disconnected") {
+            conn.open = false;
+          }
+        }
+      });
+      rtcConnection.addEventListener("datachannel", (event) => {
+        console.log(this.signalingClient.agent.name, "datachannel", event.type);
+      });
+      rtcConnection.addEventListener("icecandidate", async (event) => {
+        if (event.candidate) {
+          await this.signalingClient.sendIceCandidate(agentId, event.candidate);
+        }
+      });
+    }
   };
-  var getAllAgents = async () => {
-    const allAgents = await signalingClient.getAllAgents();
+
+  // peer-connection.ts
+  var p2pClient;
+  var getAllAgentsPolling;
+  var renderAgentList = async () => {
+    const allAgents = await p2pClient.getAllAgents();
     const agentList = document.querySelector("ul#agent-list");
     if (agentList && agentList instanceof HTMLUListElement) {
       agentList.textContent = "";
-      allAgents.filter((agent) => agent.id !== signalingClient.agent.id).forEach((agent) => {
+      allAgents.filter((agent) => agent.id !== p2pClient.agent.id).forEach((agent) => {
         const listItem = document.createElement("li");
         const clientLabel = document.createElement("label");
         clientLabel.textContent = `Name: ${agent.name} ID: ${agent.id}`;
         listItem.appendChild(clientLabel);
-        if (!rtcConnections.has(agent.id)) {
+        const conn = p2pClient.getConnectionWithAgent(agent.id);
+        if (conn) {
+          if (conn.open) {
+            const connectedIndicator = document.createElement("div");
+            connectedIndicator.classList.add("green-circle");
+            listItem.appendChild(connectedIndicator);
+          }
+        } else {
           const connectButton = document.createElement("button");
           connectButton.textContent = "Connect";
           connectButton.addEventListener("click", async (_event) => {
             console.log("connect button clicked", agent.id);
-            if (!rtcConnections.has(agent.id)) {
-              const rtcConnection = new RTCPeerConnection({
-                iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
-              });
-              listenToRtcConnectionEventsFromAgent(rtcConnection, agent.id);
-              const dataChannel = rtcConnection.createDataChannel(agent.id);
-              dataChannel.addEventListener("open", (event) => {
-                console.log("datachannel opened with", agent.id);
-              });
-              rtcConnections.set(agent.id, {
-                rtc: rtcConnection,
-                dataChannel,
-                open: false
-              });
-              const offer = await rtcConnection.createOffer();
-              await rtcConnection.setLocalDescription(offer);
-              const response = await signalingClient.sendOffer(agent.id, offer);
-              console.log("sent offer to", agent.id, "response", response);
-            }
+            await p2pClient.initiateConnectionWithAgent(agent.id);
           });
           listItem.appendChild(connectButton);
         }
         agentList.appendChild(listItem);
       });
     }
-  };
-  var listenToRtcConnectionEventsFromAgent = (rtcConnection, agentId) => {
-    rtcConnection.addEventListener("connectionstatechange", (event) => {
-      console.log(
-        signalingClient.agent.name,
-        "connectionstatechanged",
-        event.type,
-        rtcConnection.connectionState
-      );
-    });
-    rtcConnection.addEventListener("datachannel", (event) => {
-      console.log(signalingClient.agent.name, "datachannel", event.type);
-      const conn = rtcConnections.get(agentId);
-      if (conn) {
-        conn.open = true;
-      }
-    });
-    rtcConnection.addEventListener("icegatheringstatechange", (event) => {
-      console.log(
-        signalingClient.agent.name,
-        "icegatheringstatechange",
-        rtcConnection.iceConnectionState,
-        rtcConnection.iceGatheringState
-      );
-    });
-    rtcConnection.addEventListener("icecandidate", async (event) => {
-      console.log(
-        signalingClient.agent.name,
-        "icecandidate",
-        event.type,
-        "has candidate",
-        !!event.candidate
-      );
-      if (event.candidate) {
-        await signalingClient.sendIceCandidate(agentId, event.candidate);
-      }
-    });
   };
   var main = async () => {
     const agentInfoJson = localStorage.getItem("agent");
@@ -358,86 +456,11 @@
       if (agentIdInput instanceof HTMLInputElement) {
         agentIdInput.value = agent.id;
       }
-      signalingClient = await SignalingClient.connect(
-        new URL("ws://localhost:9000"),
-        agent
-      );
-      signalingClient.addSignalingListener(
-        SignalingType.Offer,
-        async (signalingMessage) => {
-          if (signalingMessage.signaling.type !== SignalingType.Offer) {
-            console.error("Received an answer as an offer", signalingMessage);
-            return;
-          }
-          const { sender, offer } = signalingMessage.signaling.data;
-          console.log("received signaling offer from", sender);
-          if (!rtcConnections.has(sender)) {
-            const rtcConnection = new RTCPeerConnection({
-              iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
-            });
-            listenToRtcConnectionEventsFromAgent(rtcConnection, sender);
-            const dataChannel = rtcConnection.createDataChannel(sender);
-            dataChannel.addEventListener("open", (event) => {
-              console.log("datahannel opened with", sender);
-            });
-            rtcConnections.set(sender, {
-              rtc: rtcConnection,
-              dataChannel,
-              open: false
-            });
-            await rtcConnection.setRemoteDescription(offer);
-            const answer = await rtcConnection.createAnswer();
-            await rtcConnection.setLocalDescription(answer);
-            const response = await signalingClient.sendAnswer(sender, answer);
-            console.log("sent answer to agent", sender, "response", response);
-          }
-        }
-      );
-      signalingClient.addSignalingListener(
-        SignalingType.Answer,
-        async (signalingMessage) => {
-          if (signalingMessage.signaling.type !== SignalingType.Answer) {
-            console.error("Received an offer as an answer", signalingMessage);
-            return;
-          }
-          const { sender, answer } = signalingMessage.signaling.data;
-          console.log("received signaling answer from", sender);
-          const rtcConnection = rtcConnections.get(sender)?.rtc;
-          if (!rtcConnection) {
-            console.error("Received an answer without an offer from", sender);
-            return;
-          }
-          await rtcConnection.setRemoteDescription(answer);
-        }
-      );
-      signalingClient.addSignalingListener(
-        SignalingType.IceCandidate,
-        async (signalingMessage) => {
-          if (signalingMessage.signaling.type !== SignalingType.IceCandidate) {
-            console.error(
-              "Received an ICE candidate as something else",
-              signalingMessage
-            );
-            return;
-          }
-          const { sender, iceCandidate } = signalingMessage.signaling.data;
-          console.log("received signaling ice candidate from", sender);
-          const rtcConnection = rtcConnections.get(sender)?.rtc;
-          console.log("has rtc conne", !!rtcConnection);
-          if (!rtcConnection) {
-            console.error(
-              "Received an ICE candidate without offer or answer from",
-              sender
-            );
-            return;
-          }
-          await rtcConnection.addIceCandidate(iceCandidate);
-        }
-      );
-      getAllAgents();
-      getAllAgentsPolling = window.setInterval(getAllAgents, 5e3);
+      p2pClient = await P2PClient.connect(agent);
       try {
-        await announce();
+        await p2pClient.announce();
+        await renderAgentList();
+        getAllAgentsPolling = window.setInterval(renderAgentList, 5e3);
       } catch (error) {
         console.error("Error announcing", error);
       }

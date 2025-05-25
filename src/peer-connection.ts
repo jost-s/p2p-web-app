@@ -1,5 +1,5 @@
-import { type Agent, AgentId } from "p2p-signal";
-import { P2PClient } from "./p2p-client";
+import { type Agent } from "p2p-signaling";
+import { P2PClient } from "p2p-client";
 
 let p2pClient: P2PClient;
 let getAllAgentsPolling: number;

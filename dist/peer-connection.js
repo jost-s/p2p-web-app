@@ -25,9 +25,9 @@
     mod
   ));
 
-  // ../p2p-signal/node_modules/ws/browser.js
+  // ../p2p-signaling/node_modules/ws/browser.js
   var require_browser = __commonJS({
-    "../p2p-signal/node_modules/ws/browser.js"(exports, module) {
+    "../p2p-signaling/node_modules/ws/browser.js"(exports, module) {
       "use strict";
       module.exports = function() {
         throw new Error(
@@ -37,7 +37,7 @@
     }
   });
 
-  // ../p2p-signal/lib/types/message/request.js
+  // ../p2p-signaling/lib/types/message/request.js
   var RequestType;
   (function(RequestType2) {
     RequestType2["Announce"] = "request_announce";
@@ -47,7 +47,7 @@
     RequestType2["SendIceCandidate"] = "request_send_ice_candidate";
   })(RequestType || (RequestType = {}));
 
-  // ../p2p-signal/lib/types/message/response.js
+  // ../p2p-signaling/lib/types/message/response.js
   var ResponseType;
   (function(ResponseType2) {
     ResponseType2["Announce"] = "response_announce";
@@ -58,7 +58,7 @@
     ResponseType2["Error"] = "response_error";
   })(ResponseType || (ResponseType = {}));
 
-  // ../p2p-signal/lib/types/message/signaling.js
+  // ../p2p-signaling/lib/types/message/signaling.js
   var SignalingType;
   (function(SignalingType2) {
     SignalingType2["Offer"] = "signaling_offer";
@@ -66,7 +66,7 @@
     SignalingType2["IceCandidate"] = "signaling_ice_candidate";
   })(SignalingType || (SignalingType = {}));
 
-  // ../p2p-signal/lib/types/message/index.js
+  // ../p2p-signaling/lib/types/message/index.js
   var MessageType;
   (function(MessageType2) {
     MessageType2["Request"] = "request";
@@ -74,7 +74,7 @@
     MessageType2["Signaling"] = "signaling";
   })(MessageType || (MessageType = {}));
 
-  // ../p2p-signal/lib/util.js
+  // ../p2p-signaling/lib/util.js
   var encodeRequestMessage = (message) => JSON.stringify(message);
   var decodeMessage = (message) => {
     const decodedMessage = JSON.parse(message.toString());
@@ -85,7 +85,7 @@
   };
   var formatError = (object) => JSON.stringify(object, null, 2);
 
-  // ../p2p-signal/lib/client.js
+  // ../p2p-signaling/lib/client.js
   var SignalingClient = class _SignalingClient {
     constructor(ws, agent) {
       this.messageListener = (event) => {
@@ -256,25 +256,19 @@
     }
   };
 
-  // ../p2p-signal/lib/server.js
+  // ../p2p-signaling/lib/server.js
   var import_ws = __toESM(require_browser(), 1);
 
-  // src/p2p-client.ts
+  // ../p2p-client/lib/p2p-client.js
   var ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
   var P2PClient = class _P2PClient {
-    agent;
-    rtcConnections;
-    signalingClient;
     constructor(signalingClient, agent) {
       this.agent = agent;
       this.rtcConnections = /* @__PURE__ */ new Map();
       this.signalingClient = signalingClient;
     }
     static async connect(agent) {
-      const signalingClient = await SignalingClient.connect(
-        new URL("ws://localhost:9000"),
-        agent
-      );
+      const signalingClient = await SignalingClient.connect(new URL("ws://localhost:9000"), agent);
       const p2pClient2 = new _P2PClient(signalingClient, agent);
       p2pClient2.listenToSignalingEvents();
       return p2pClient2;
@@ -331,87 +325,64 @@
       });
     }
     listenToSignalingEvents() {
-      this.signalingClient.addSignalingListener(
-        SignalingType.Offer,
-        async (signalingMessage) => {
-          if (signalingMessage.signaling.type !== SignalingType.Offer) {
-            console.error("Received an answer as an offer", signalingMessage);
-            return;
-          }
-          const { sender, offer } = signalingMessage.signaling.data;
-          console.info("received signaling offer from", sender);
-          if (!this.rtcConnections.has(sender)) {
-            const rtcConnection = this.createConnectionForAgent(sender);
-            rtcConnection.addEventListener("datachannel", (event) => {
-              console.debug("datachannel opened with", sender);
-              const dataChannel = event.channel;
-              this.rtcConnections.set(sender, {
-                rtc: rtcConnection,
-                dataChannel,
-                open: true
-              });
-              this.listenForSyncMessages(dataChannel);
+      this.signalingClient.addSignalingListener(SignalingType.Offer, async (signalingMessage) => {
+        if (signalingMessage.signaling.type !== SignalingType.Offer) {
+          console.error("Received an answer as an offer", signalingMessage);
+          return;
+        }
+        const { sender, offer } = signalingMessage.signaling.data;
+        console.info("received signaling offer from", sender);
+        if (!this.rtcConnections.has(sender)) {
+          const rtcConnection = this.createConnectionForAgent(sender);
+          rtcConnection.addEventListener("datachannel", (event) => {
+            console.debug("datachannel opened with", sender);
+            const dataChannel = event.channel;
+            this.rtcConnections.set(sender, {
+              rtc: rtcConnection,
+              dataChannel,
+              open: true
             });
-            await rtcConnection.setRemoteDescription(offer);
-            const answer = await rtcConnection.createAnswer();
-            await rtcConnection.setLocalDescription(answer);
-            const response = await this.signalingClient.sendAnswer(
-              sender,
-              answer
-            );
-            console.debug("sent answer to agent", sender, "response", response);
-          }
+            this.listenForSyncMessages(dataChannel);
+          });
+          await rtcConnection.setRemoteDescription(offer);
+          const answer = await rtcConnection.createAnswer();
+          await rtcConnection.setLocalDescription(answer);
+          const response = await this.signalingClient.sendAnswer(sender, answer);
+          console.debug("sent answer to agent", sender, "response", response);
         }
-      );
-      this.signalingClient.addSignalingListener(
-        SignalingType.Answer,
-        async (signalingMessage) => {
-          if (signalingMessage.signaling.type !== SignalingType.Answer) {
-            console.error("Received an offer as an answer", signalingMessage);
-            return;
-          }
-          const { sender, answer } = signalingMessage.signaling.data;
-          console.debug("received signaling answer from", sender);
-          const rtcConnection = this.rtcConnections.get(sender)?.rtc;
-          if (!rtcConnection) {
-            console.error("Received an answer without an offer from", sender);
-            return;
-          }
-          await rtcConnection.setRemoteDescription(answer);
+      });
+      this.signalingClient.addSignalingListener(SignalingType.Answer, async (signalingMessage) => {
+        if (signalingMessage.signaling.type !== SignalingType.Answer) {
+          console.error("Received an offer as an answer", signalingMessage);
+          return;
         }
-      );
-      this.signalingClient.addSignalingListener(
-        SignalingType.IceCandidate,
-        async (signalingMessage) => {
-          if (signalingMessage.signaling.type !== SignalingType.IceCandidate) {
-            console.error(
-              "Received an ICE candidate as something else",
-              signalingMessage
-            );
-            return;
-          }
-          const { sender, iceCandidate } = signalingMessage.signaling.data;
-          console.debug("received signaling ice candidate from", sender);
-          const rtcConnection = this.rtcConnections.get(sender)?.rtc;
-          if (!rtcConnection) {
-            console.error(
-              "Received an ICE candidate without offer or answer from",
-              sender
-            );
-            return;
-          }
-          await rtcConnection.addIceCandidate(iceCandidate);
+        const { sender, answer } = signalingMessage.signaling.data;
+        console.debug("received signaling answer from", sender);
+        const rtcConnection = this.rtcConnections.get(sender)?.rtc;
+        if (!rtcConnection) {
+          console.error("Received an answer without an offer from", sender);
+          return;
         }
-      );
+        await rtcConnection.setRemoteDescription(answer);
+      });
+      this.signalingClient.addSignalingListener(SignalingType.IceCandidate, async (signalingMessage) => {
+        if (signalingMessage.signaling.type !== SignalingType.IceCandidate) {
+          console.error("Received an ICE candidate as something else", signalingMessage);
+          return;
+        }
+        const { sender, iceCandidate } = signalingMessage.signaling.data;
+        console.debug("received signaling ice candidate from", sender);
+        const rtcConnection = this.rtcConnections.get(sender)?.rtc;
+        if (!rtcConnection) {
+          console.error("Received an ICE candidate without offer or answer from", sender);
+          return;
+        }
+        await rtcConnection.addIceCandidate(iceCandidate);
+      });
     }
     listenToRtcConnectionEventsFromAgent(rtcConnection, agentId) {
       rtcConnection.addEventListener("connectionstatechange", (event) => {
-        console.debug(
-          this.signalingClient.agent.name,
-          "connectionstatechanged",
-          event.type,
-          rtcConnection.connectionState
-        );
+        console.debug(this.signalingClient.agent.name, "connectionstatechanged", event.type, rtcConnection.connectionState);
         const conn = this.rtcConnections.get(agentId);
         if (conn) {
           if (rtcConnection.connectionState === "connected") {

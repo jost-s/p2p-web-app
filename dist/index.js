@@ -1,5 +1,5 @@
 (() => {
-  // index.ts
+  // src/index.ts
   if (localStorage.getItem("agentInfo")) {
     window.location.replace("peer-connection.html");
   }

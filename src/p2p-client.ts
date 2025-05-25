@@ -1,8 +1,10 @@
 import { Agent, AgentId, SignalingClient, SignalingType } from "p2p-signal";
+import { P2PConnection, Transport } from "./transport.js";
 
 interface Connection {
   rtc: RTCPeerConnection;
-  dataChannel: RTCDataChannel;
+  // transport: Transport | null;
+  dataChannel: RTCDataChannel | null;
   open: boolean;
 }
 
@@ -20,7 +22,7 @@ export class P2PClient {
     this.signalingClient = signalingClient;
   }
 
-  static async connect(agent) {
+  static async connect(agent: Agent) {
     const signalingClient = await SignalingClient.connect(
       new URL("ws://localhost:9000"),
       agent
@@ -43,28 +45,52 @@ export class P2PClient {
     return this.rtcConnections.get(agentId);
   }
 
-  createConnectionWithAgent(agentId: AgentId) {
+  async initiateConnectionWithAgent(agentId: AgentId) {
+    const rtcConnection = this.createConnectionForAgent(agentId);
+
+    const dataChannel = rtcConnection.createDataChannel(agentId);
+    dataChannel.addEventListener("open", async (event) => {
+      console.info("datachannel opened with", agentId);
+      this.rtcConnections.set(agentId, {
+        rtc: rtcConnection,
+        dataChannel,
+        open: true,
+      });
+      this.sync(dataChannel);
+    });
+    const offer = await rtcConnection.createOffer();
+    await rtcConnection.setLocalDescription(offer);
+    await this.signalingClient.sendOffer(agentId, offer);
+  }
+
+  private createConnectionForAgent(agentId: AgentId) {
     const rtcConnection = new RTCPeerConnection({
       iceServers: ICE_SERVERS,
     });
     this.listenToRtcConnectionEventsFromAgent(rtcConnection, agentId);
-    const dataChannel = rtcConnection.createDataChannel(agentId);
-    dataChannel.addEventListener("open", (event) => {
-      console.log("datachannel opened with", agentId);
-    });
+
     this.rtcConnections.set(agentId, {
       rtc: rtcConnection,
-      dataChannel,
+      dataChannel: null,
       open: false,
     });
     return rtcConnection;
   }
 
-  async initiateConnectionWithAgent(agentId: AgentId) {
-    const rtcConnection = this.createConnectionWithAgent(agentId);
-    const offer = await rtcConnection.createOffer();
-    await rtcConnection.setLocalDescription(offer);
-    await this.signalingClient.sendOffer(agentId, offer);
+  private async sync(dataChannel: RTCDataChannel) {
+    dataChannel.addEventListener("message", async (event) => {
+      console.log("incoming message", event.data);
+    });
+    dataChannel.send("init sync");
+  }
+
+  private async listenForSyncMessages(dataChannel: RTCDataChannel) {
+    dataChannel.addEventListener("message", async (event) => {
+      console.log("incoming message", event.data);
+      if (event.data === "init sync") {
+        dataChannel.send("alright, here's what's new");
+      }
+    });
   }
 
   private listenToSignalingEvents() {
@@ -76,9 +102,21 @@ export class P2PClient {
           return;
         }
         const { sender, offer } = signalingMessage.signaling.data;
-        console.log("received signaling offer from", sender);
+        console.info("received signaling offer from", sender);
         if (!this.rtcConnections.has(sender)) {
-          const rtcConnection = this.createConnectionWithAgent(sender);
+          const rtcConnection = this.createConnectionForAgent(sender);
+
+          rtcConnection.addEventListener("datachannel", (event) => {
+            console.debug("datachannel opened with", sender);
+            const dataChannel = event.channel;
+            this.rtcConnections.set(sender, {
+              rtc: rtcConnection,
+              dataChannel,
+              open: true,
+            });
+            this.listenForSyncMessages(dataChannel);
+          });
+
           await rtcConnection.setRemoteDescription(offer);
           const answer = await rtcConnection.createAnswer();
           await rtcConnection.setLocalDescription(answer);
@@ -86,7 +124,7 @@ export class P2PClient {
             sender,
             answer
           );
-          console.log("sent answer to agent", sender, "response", response);
+          console.debug("sent answer to agent", sender, "response", response);
         }
       }
     );
@@ -98,7 +136,7 @@ export class P2PClient {
           return;
         }
         const { sender, answer } = signalingMessage.signaling.data;
-        console.log("received signaling answer from", sender);
+        console.debug("received signaling answer from", sender);
         const rtcConnection = this.rtcConnections.get(sender)?.rtc;
         if (!rtcConnection) {
           console.error("Received an answer without an offer from", sender);
@@ -118,9 +156,8 @@ export class P2PClient {
           return;
         }
         const { sender, iceCandidate } = signalingMessage.signaling.data;
-        console.log("received signaling ice candidate from", sender);
+        console.debug("received signaling ice candidate from", sender);
         const rtcConnection = this.rtcConnections.get(sender)?.rtc;
-        console.log("has rtc conne", !!rtcConnection);
         if (!rtcConnection) {
           console.error(
             "Received an ICE candidate without offer or answer from",
@@ -138,7 +175,7 @@ export class P2PClient {
     agentId: AgentId
   ) {
     rtcConnection.addEventListener("connectionstatechange", (event) => {
-      console.log(
+      console.debug(
         this.signalingClient.agent.name,
         "connectionstatechanged",
         event.type,
@@ -152,9 +189,6 @@ export class P2PClient {
           conn.open = false;
         }
       }
-    });
-    rtcConnection.addEventListener("datachannel", (event) => {
-      console.log(this.signalingClient.agent.name, "datachannel", event.type);
     });
     rtcConnection.addEventListener("icecandidate", async (event) => {
       if (event.candidate) {

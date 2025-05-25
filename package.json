@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "test": "vitest --run",
-    "bundle": "esbuild index.ts peer-connection.ts --bundle --outdir=dist"
+    "bundle": "esbuild src/index.ts src/peer-connection.ts --bundle --outdir=dist --outbase=src"
   },
   "keywords": [],
   "author": "",

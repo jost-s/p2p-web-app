@@ -267,8 +267,8 @@
       this.rtcConnections = /* @__PURE__ */ new Map();
       this.signalingClient = signalingClient;
     }
-    static async connect(agent) {
-      const signalingClient = await SignalingClient.connect(new URL("ws://localhost:9000"), agent);
+    static async connect(url, agent) {
+      const signalingClient = await SignalingClient.connect(url, agent);
       const p2pClient2 = new _P2PClient(signalingClient, agent);
       p2pClient2.listenToSignalingEvents();
       return p2pClient2;
@@ -400,6 +400,19 @@
     }
   };
 
+  // ../p2p-client/lib/types/message.js
+  var P2PMessageType;
+  (function(P2PMessageType2) {
+    P2PMessageType2["Sync"] = "p2p_sync";
+  })(P2PMessageType || (P2PMessageType = {}));
+
+  // ../p2p-client/lib/types/sync.js
+  var SyncMessageType;
+  (function(SyncMessageType2) {
+    SyncMessageType2["Initiate"] = "sync_initiate";
+    SyncMessageType2["Respond"] = "sync_respond";
+  })(SyncMessageType || (SyncMessageType = {}));
+
   // src/peer-connection.ts
   var p2pClient;
   var getAllAgentsPolling;
@@ -445,7 +458,10 @@
       if (agentIdInput instanceof HTMLInputElement) {
         agentIdInput.value = agent.id;
       }
-      p2pClient = await P2PClient.connect(agent);
+      const url = new URL(
+        "ws://websocket-hibernation-server.jost-schulte.workers.dev/"
+      );
+      p2pClient = await P2PClient.connect(url, agent);
       try {
         await p2pClient.announce();
         await renderAgentList();

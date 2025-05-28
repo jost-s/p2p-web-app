@@ -52,7 +52,10 @@ const main = async () => {
       agentIdInput.value = agent.id;
     }
 
-    p2pClient = await P2PClient.connect(agent);
+    const url = new URL(
+      "ws://websocket-hibernation-server.jost-schulte.workers.dev/"
+    );
+    p2pClient = await P2PClient.connect(url, agent);
 
     try {
       await p2pClient.announce();

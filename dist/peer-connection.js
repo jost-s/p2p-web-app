@@ -94,6 +94,7 @@
           message = decodeMessage(event.data);
         } catch (error) {
           console.error(error);
+          console.error(event.data);
           return;
         }
         if (message.type === MessageType.Response) {
@@ -459,7 +460,7 @@
         agentIdInput.value = agent.id;
       }
       const url = new URL(
-        "ws://websocket-hibernation-server.jost-schulte.workers.dev/"
+        "wss://websocket-hibernation-server.jost-schulte.workers.dev/"
       );
       p2pClient = await P2PClient.connect(url, agent);
       try {

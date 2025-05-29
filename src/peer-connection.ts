@@ -53,7 +53,7 @@ const main = async () => {
     }
 
     const url = new URL(
-      "ws://websocket-hibernation-server.jost-schulte.workers.dev/"
+      "wss://websocket-hibernation-server.jost-schulte.workers.dev/"
     );
     p2pClient = await P2PClient.connect(url, agent);
 

@@ -52,9 +52,7 @@ const main = async () => {
       agentIdInput.value = agent.id;
     }
 
-    const url = new URL(
-      "wss://websocket-hibernation-server.jost-schulte.workers.dev/"
-    );
+    const url = new URL("wss://p2p-signaling-server.jost-schulte.workers.dev/");
     p2pClient = await P2PClient.connect(url, agent);
 
     try {

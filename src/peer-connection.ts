@@ -1,47 +1,101 @@
+import { P2PClient, P2PItem, P2PMessage, P2PMessageType } from "p2p-client";
 import { type Agent } from "p2p-signaling";
-import { P2PClient } from "p2p-client";
+import { Items } from "./types/item.js";
+import { computeHash, makeItem, restoreItems, storeItems } from "./util.js";
+
+const AGENT_EXPIRY_MS = 1000 * 30;
 
 let p2pClient: P2PClient;
-let getAllAgentsPolling: number;
+let peers: Agent[];
+let items: Items = new Map();
 
 const renderAgentList = async () => {
   const allAgents = await p2pClient.getAllAgents();
+  peers = allAgents.filter((agent) => agent.id !== p2pClient.agent.id);
   const agentList = document.querySelector("ul#agent-list");
-  if (agentList && agentList instanceof HTMLUListElement) {
+  if (peers.length > 0 && agentList instanceof HTMLUListElement) {
     agentList.textContent = "";
-    allAgents
-      .filter((agent) => agent.id !== p2pClient.agent.id)
-      .forEach((agent) => {
-        const listItem = document.createElement("li");
-        const clientLabel = document.createElement("label");
-        clientLabel.textContent = `Name: ${agent.name} ID: ${agent.id}`;
-        listItem.appendChild(clientLabel);
+    peers.forEach((agent) => {
+      const listItem = document.createElement("li");
+      const clientLabel = document.createElement("label");
+      clientLabel.textContent = `Name: ${agent.name} ID: ${agent.id}`;
+      listItem.appendChild(clientLabel);
+      agentList.appendChild(listItem);
+    });
+  }
+};
 
-        const conn = p2pClient.getConnectionWithAgent(agent.id);
-        if (conn) {
-          if (conn.open) {
-            const connectedIndicator = document.createElement("div");
-            connectedIndicator.classList.add("green-circle");
-            listItem.appendChild(connectedIndicator);
-          }
-        } else {
-          const connectButton = document.createElement("button");
-          connectButton.textContent = "Connect";
-          connectButton.addEventListener("click", async (_event) => {
-            console.log("connect button clicked", agent.id);
-            await p2pClient.initiateConnectionWithAgent(agent.id);
-          });
-          listItem.appendChild(connectButton);
-        }
-        agentList.appendChild(listItem);
-      });
+const onMessagePublish = (event: SubmitEvent) => {
+  event.preventDefault();
+  const messageInput = document.querySelector(
+    "form[name='new-message'] > input"
+  );
+  if (messageInput instanceof HTMLInputElement) {
+    if (messageInput.value) {
+      const item = makeItem(p2pClient.agent.id, messageInput.value);
+      console.log("new message published", item);
+
+      // Add to item map and store in storage.
+      items.set(computeHash(item), item);
+      storeItems(items, localStorage);
+
+      messageInput.value = "";
+      renderMessageList();
+
+      // Push to available peers.
+      pushItemToPeers(item);
+    }
+  }
+};
+
+const pushItemToPeers = async (item: P2PItem) => {
+  return Promise.all(
+    peers.map((peer) => p2pClient.pushToAgent(peer.id, [item]))
+  );
+};
+
+const onIncomingPushMessage = (message: P2PMessage) => {
+  if (message.type === P2PMessageType.Push) {
+    console.debug("incoming push message", message);
+    message.data.items.forEach((item) => items.set(computeHash(item), item));
+    storeItems(items, localStorage);
+    renderMessageList();
+  }
+};
+
+const renderMessageList = async () => {
+  const messageList = document.querySelector("ul#message-list");
+  if (items.size > 0 && messageList instanceof HTMLUListElement) {
+    messageList.textContent = "";
+    const itemsSorted = [...items]
+      .map(([_, item]) => item)
+      .sort((a, b) => b.timestamp - a.timestamp);
+    itemsSorted.forEach((message) => {
+      const listItem = document.createElement("li");
+      const clientLabel = document.createElement("label");
+      clientLabel.textContent = `When: ${message.timestamp} | From: ${message.author} | Content: ${message.content}`;
+      listItem.appendChild(clientLabel);
+      messageList.appendChild(listItem);
+    });
   }
 };
 
 const main = async () => {
   const agentInfoJson = localStorage.getItem("agent");
   if (agentInfoJson) {
+    // Register new message callback.
+    const newMessageForm = document.querySelector("form[name='new-message']");
+    if (newMessageForm instanceof HTMLFormElement) {
+      newMessageForm.addEventListener("submit", onMessagePublish);
+    }
+
+    // Get messages from local storage.
+    items = restoreItems(localStorage);
+    renderMessageList();
+
+    // Connect client to signaling service.
     const agent: Agent = JSON.parse(agentInfoJson);
+    agent.expiry = Date.now() + AGENT_EXPIRY_MS;
 
     const agentNameInput = document.querySelector("input#agent-name");
     if (agentNameInput instanceof HTMLInputElement) {
@@ -53,12 +107,17 @@ const main = async () => {
     }
 
     const url = new URL("wss://p2p-signaling-server.jost-schulte.workers.dev/");
+    // const url = new URL("ws://localhost:8787/");
     p2pClient = await P2PClient.connect(url, agent);
+    p2pClient.setP2pMessageListener(P2PMessageType.Push, onIncomingPushMessage);
 
     try {
+      // Announce agent every 10 seconds.
       await p2pClient.announce();
+      window.setInterval(p2pClient.announce.bind(p2pClient), 10_000);
+      // Get all agents every 5 seconds.
       await renderAgentList();
-      getAllAgentsPolling = window.setInterval(renderAgentList, 5000);
+      window.setInterval(renderAgentList, 5000);
     } catch (error) {
       console.error("Error announcing", error);
     }

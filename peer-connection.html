@@ -14,9 +14,25 @@
         <label for="agent-id">ID:</label><input id="agent-id" readonly />
     </header>
     <main>
+        <h2>Messages</h2>
+
+        <form name="new-message">
+            <label for="message">New message:</label>
+            <input id="message" />
+            <button type="submit">Publish</button>
+        </form>
+
+        <h4>All Messages</h4>
+
+        <ul id="message-list">
+            <li>None so far</li>
+        </ul>
+
         <h2>Agents</h2>
 
-        <ul id="agent-list"></ul>
+        <ul id="agent-list">
+            <li>None so far</li>
+        </ul>
     </main>
 
     <script src="dist/peer-connection.js"></script>

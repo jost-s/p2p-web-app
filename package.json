@@ -4,6 +4,7 @@
   "main": "main.js",
   "type": "module",
   "scripts": {
+    "test": "vitest --run",
     "bundle": "esbuild src/index.ts src/peer-connection.ts --bundle --outdir=dist --outbase=src"
   },
   "keywords": [],
@@ -15,6 +16,7 @@
     "p2p-signaling": "file:../p2p-signaling"
   },
   "devDependencies": {
-    "esbuild": "^0.25.4"
+    "esbuild": "^0.25.4",
+    "vitest": "^3.1.4"
   }
 }

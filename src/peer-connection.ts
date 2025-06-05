@@ -1,10 +1,11 @@
 import {
   FetchMessageType,
   P2PClient,
+  P2PItem,
   P2PMessage,
   P2PMessageType,
 } from "p2p-client";
-import { type Agent } from "p2p-signaling";
+import { AgentId, type Agent } from "p2p-signaling";
 import { computeHash, makeItem, restoreItems, storeItems } from "./util.js";
 
 const AGENT_EXPIRY_MS = 1000 * 30;
@@ -44,9 +45,10 @@ const onMessagePublish = async (event: SubmitEvent) => {
       renderMessageList();
 
       // Push to available peers.
-      const peers = await p2pClient.getAllPeers();
       await Promise.all(
-        peers.map((peer) => p2pClient.pushToAgent(peer.id, [item]))
+        p2pClient.peerStore.map((peer) =>
+          p2pClient.pushToAgent(peer.id, [item])
+        )
       );
     }
   }
@@ -76,14 +78,35 @@ const renderMessageList = async () => {
     const itemsSorted = [...p2pClient.items]
       .map(([_, item]) => item)
       .sort((a, b) => b.timestamp - a.timestamp);
+    const authors = getAuthors(itemsSorted);
     itemsSorted.forEach((message) => {
       const listItem = document.createElement("li");
       const clientLabel = document.createElement("label");
-      clientLabel.textContent = `When: ${message.timestamp} | From: ${message.author} | Content: ${message.content}`;
+      const author = authors.get(message.author);
+      clientLabel.textContent = `When: ${message.timestamp} | From: ${author} | Content: ${message.content}`;
       listItem.appendChild(clientLabel);
       messageList.appendChild(listItem);
     });
   }
+};
+
+const getAuthors = (items: P2PItem[]) => {
+  const uniqueAuthors = new Set<AgentId>(items.map((item) => item.author));
+  const authors = new Map<AgentId, string>();
+  [...uniqueAuthors].forEach((author) => {
+    if (author === p2pClient.agent.id) {
+      authors.set(author, p2pClient.agent.name);
+    } else {
+      const peer = p2pClient.peerStore.find((peer) => peer.id === author);
+      if (peer) {
+        authors.set(author, peer.name);
+      } else {
+        // Fallback on agent id
+        authors.set(author, author);
+      }
+    }
+  });
+  return authors;
 };
 
 const main = async () => {
@@ -117,21 +140,34 @@ const main = async () => {
       onIncomingFetchMessage
     );
 
+    // Announce agent every 10 seconds.
+    await p2pClient.announce();
+    window.setInterval(p2pClient.announce.bind(p2pClient), 10_000);
+
+    // Fetch all messages from peers.
+    const peers = await p2pClient.getAllPeers();
+    peers.forEach((peer) =>
+      p2pClient
+        .fetchFromAgent(peer.id)
+        .then(() => console.info("fetched messages from", peer.id, peer.name))
+        .catch((reason) =>
+          console.warn(
+            "couldn't fetch messages` from",
+            peer.id,
+            peer.name,
+            "error",
+            reason
+          )
+        )
+    );
+
     // Get messages from local storage.
     p2pClient.items = restoreItems(localStorage);
     renderMessageList();
 
-    try {
-      // Announce agent every 10 seconds.
-      await p2pClient.announce();
-      window.setInterval(p2pClient.announce.bind(p2pClient), 10_000);
-
-      // Get all agents every 5 seconds.
-      await renderAgentList();
-      window.setInterval(renderAgentList, 5000);
-    } catch (error) {
-      console.error("Error announcing", error);
-    }
+    // Get all agents every 5 seconds.
+    await renderAgentList();
+    window.setInterval(renderAgentList, 5000);
   } else {
     console.log("AgentInfo not found in local storage, redirecting...");
     window.location.href = "index.html";

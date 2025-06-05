@@ -303,44 +303,16 @@
   var import_ws = __toESM(require_browser(), 1);
   var MAX_EXPIRY_MS = 1e3 * 60 * 5;
 
-  // ../p2p-client/lib/connection.js
-  var Peer = class {
-    constructor(transport) {
-      this.transport = transport;
-    }
-    push(items) {
-      const message = {
-        type: P2PMessageType.Push,
-        data: { items }
-      };
-      this.transport.send(message);
-    }
-  };
-
   // ../p2p-client/lib/transport.js
   var encodeP2pMessage = (message) => JSON.stringify(message);
   var decodeP2pMessage = (message) => JSON.parse(message);
-  var P2PTransport = class {
-    constructor(dataChannel) {
-      this.dataChannel = dataChannel;
-    }
-    setMessageListener(callback) {
-      this.dataChannel.addEventListener("message", (event) => {
-        const message = event.data;
-        callback(message);
-      });
-    }
-    send(message) {
-      const encodedMessage = JSON.stringify(message);
-      this.dataChannel.send(encodedMessage);
-    }
-  };
 
   // ../p2p-client/lib/p2p-client.js
   var ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
   var P2PClient = class _P2PClient {
     constructor(signalingClient, agent) {
       this.agent = agent;
+      this.peerStore = [];
       this.signalingClient = signalingClient;
       this.p2pMessageListeners = /* @__PURE__ */ new Map();
       this.rtcConnections = /* @__PURE__ */ new Map();
@@ -349,7 +321,7 @@
     static async connect(url, agent) {
       const signalingClient = await SignalingClient.connect(url, agent);
       const p2pClient2 = new _P2PClient(signalingClient, agent);
-      p2pClient2.listenToSignalingEvents();
+      p2pClient2.listenForSignalingEvents();
       return p2pClient2;
     }
     async announce() {
@@ -358,43 +330,63 @@
     async getAllPeers() {
       const allAgents = await this.signalingClient.getAllAgents();
       const peers = allAgents.filter((agent) => agent.id !== this.agent.id);
+      this.peerStore = peers;
       return peers;
     }
     setP2pMessageListener(type, listener) {
       this.p2pMessageListeners.set(type, listener);
     }
+    async fetchFromAgent(agentId) {
+      const dataChannel = await this.createDataChannelForAgent(agentId);
+      const message = {
+        type: P2PMessageType.Fetch,
+        data: { type: FetchMessageType.Request, data: { lastSync: 0 } }
+      };
+      dataChannel.send(encodeP2pMessage(message));
+    }
     async pushToAgent(agentId, items) {
+      const dataChannel = await this.createDataChannelForAgent(agentId);
+      const message = {
+        type: P2PMessageType.Push,
+        data: { items }
+      };
+      dataChannel.send(encodeP2pMessage(message));
+    }
+    async createDataChannelForAgent(agentId) {
       let existingConnection = this.rtcConnections.get(agentId);
       if (!existingConnection) {
         existingConnection = await this.createConnectionForAgent(agentId);
       }
       let dataChannel = existingConnection.dataChannel;
       if (!dataChannel) {
-        dataChannel = await existingConnection.rtc.createDataChannel(agentId);
+        dataChannel = existingConnection.rtc.createDataChannel(agentId);
         existingConnection.dataChannel = dataChannel;
       }
-      const dataChannelOpened = new Promise((resolve, reject) => {
-        dataChannel.addEventListener("open", (event) => {
-          console.info("datachannel opened with", agentId);
-          const conn = this.rtcConnections.get(agentId);
-          if (conn) {
-            conn.open = true;
-          }
-          resolve();
+      if (dataChannel.readyState !== "open") {
+        const dataChannelOpened = new Promise((resolve, reject) => {
+          dataChannel.addEventListener("open", (event) => {
+            console.info("datachannel opened with", agentId);
+            const conn = this.rtcConnections.get(agentId);
+            if (conn) {
+              conn.open = true;
+            }
+            resolve();
+          });
+          dataChannel.addEventListener("error", (event) => {
+            console.info("error when opening datachannel with agent", agentId, event.error);
+            const conn = this.rtcConnections.get(agentId);
+            if (conn) {
+              conn.dataChannel = null;
+            }
+            reject(event.error);
+          });
         });
-        dataChannel.addEventListener("error", (event) => {
-          console.info("error when opening datachannel with agent", agentId, event.error);
-          const conn = this.rtcConnections.get(agentId);
-          if (conn) {
-            conn.dataChannel = null;
-          }
-          reject(event.error);
-        });
-      });
-      const offer = await existingConnection.rtc.createOffer();
-      await existingConnection.rtc.setLocalDescription(offer);
-      await this.signalingClient.sendOffer(agentId, offer);
-      await dataChannelOpened;
+        this.listenForP2pMessage(dataChannel);
+        const offer = await existingConnection.rtc.createOffer();
+        await existingConnection.rtc.setLocalDescription(offer);
+        await this.signalingClient.sendOffer(agentId, offer);
+        await dataChannelOpened;
+      }
       dataChannel.addEventListener("close", (event) => {
         console.info("datachannel closed with", agentId);
         const conn = this.rtcConnections.get(agentId);
@@ -403,13 +395,7 @@
           conn.open = false;
         }
       });
-      const transport = new P2PTransport(dataChannel);
-      const connection = new Peer(transport);
-      connection.push(items);
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      dataChannel.close();
-      existingConnection.rtc.close();
-      this.rtcConnections.delete(agentId);
+      return dataChannel;
     }
     async createConnectionForAgent(agentId) {
       let rtcConnection;
@@ -433,7 +419,7 @@
     listenForP2pMessage(dataChannel) {
       dataChannel.addEventListener("message", (event) => {
         const message = decodeP2pMessage(event.data);
-        console.log("received p2p message", message);
+        console.debug("received p2p message", message);
         if (message.type === P2PMessageType.Push) {
           const items = message.data.items;
           items.forEach((item) => {
@@ -478,7 +464,7 @@
         }
       });
     }
-    listenToSignalingEvents() {
+    listenForSignalingEvents() {
       this.signalingClient.addSignalingListener(SignalingType.Offer, async (signalingMessage) => {
         if (signalingMessage.signaling.type !== SignalingType.Offer) {
           console.error("Received an answer as an offer", signalingMessage);
@@ -614,9 +600,10 @@
         storeItems(p2pClient.items, localStorage);
         messageInput.value = "";
         renderMessageList();
-        const peers = await p2pClient.getAllPeers();
         await Promise.all(
-          peers.map((peer) => p2pClient.pushToAgent(peer.id, [item]))
+          p2pClient.peerStore.map(
+            (peer) => p2pClient.pushToAgent(peer.id, [item])
+          )
         );
       }
     }
@@ -641,14 +628,33 @@
     if (p2pClient.items.size > 0 && messageList instanceof HTMLUListElement) {
       messageList.textContent = "";
       const itemsSorted = [...p2pClient.items].map(([_, item]) => item).sort((a, b) => b.timestamp - a.timestamp);
+      const authors = getAuthors(itemsSorted);
       itemsSorted.forEach((message) => {
         const listItem = document.createElement("li");
         const clientLabel = document.createElement("label");
-        clientLabel.textContent = `When: ${message.timestamp} | From: ${message.author} | Content: ${message.content}`;
+        const author = authors.get(message.author);
+        clientLabel.textContent = `When: ${message.timestamp} | From: ${author} | Content: ${message.content}`;
         listItem.appendChild(clientLabel);
         messageList.appendChild(listItem);
       });
     }
+  };
+  var getAuthors = (items) => {
+    const uniqueAuthors = new Set(items.map((item) => item.author));
+    const authors = /* @__PURE__ */ new Map();
+    [...uniqueAuthors].forEach((author) => {
+      if (author === p2pClient.agent.id) {
+        authors.set(author, p2pClient.agent.name);
+      } else {
+        const peer = p2pClient.peerStore.find((peer2) => peer2.id === author);
+        if (peer) {
+          authors.set(author, peer.name);
+        } else {
+          authors.set(author, author);
+        }
+      }
+    });
+    return authors;
   };
   var main = async () => {
     const agentInfoJson = localStorage.getItem("agent");
@@ -674,16 +680,24 @@
         P2PMessageType.Fetch,
         onIncomingFetchMessage
       );
+      await p2pClient.announce();
+      window.setInterval(p2pClient.announce.bind(p2pClient), 1e4);
+      const peers = await p2pClient.getAllPeers();
+      peers.forEach(
+        (peer) => p2pClient.fetchFromAgent(peer.id).then(() => console.info("fetched messages from", peer.id, peer.name)).catch(
+          (reason) => console.warn(
+            "couldn't fetch messages` from",
+            peer.id,
+            peer.name,
+            "error",
+            reason
+          )
+        )
+      );
       p2pClient.items = restoreItems(localStorage);
       renderMessageList();
-      try {
-        await p2pClient.announce();
-        window.setInterval(p2pClient.announce.bind(p2pClient), 1e4);
-        await renderAgentList();
-        window.setInterval(renderAgentList, 5e3);
-      } catch (error) {
-        console.error("Error announcing", error);
-      }
+      await renderAgentList();
+      window.setInterval(renderAgentList, 5e3);
     } else {
       console.log("AgentInfo not found in local storage, redirecting...");
       window.location.href = "index.html";

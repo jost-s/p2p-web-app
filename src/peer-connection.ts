@@ -1,17 +1,18 @@
-import { P2PClient, P2PItem, P2PMessage, P2PMessageType } from "p2p-client";
+import {
+  FetchMessageType,
+  P2PClient,
+  P2PMessage,
+  P2PMessageType,
+} from "p2p-client";
 import { type Agent } from "p2p-signaling";
-import { Items } from "./types/item.js";
 import { computeHash, makeItem, restoreItems, storeItems } from "./util.js";
 
 const AGENT_EXPIRY_MS = 1000 * 30;
 
 let p2pClient: P2PClient;
-let peers: Agent[];
-let items: Items = new Map();
 
 const renderAgentList = async () => {
-  const allAgents = await p2pClient.getAllAgents();
-  peers = allAgents.filter((agent) => agent.id !== p2pClient.agent.id);
+  const peers = await p2pClient.getAllPeers();
   const agentList = document.querySelector("ul#agent-list");
   if (peers.length > 0 && agentList instanceof HTMLUListElement) {
     agentList.textContent = "";
@@ -25,7 +26,7 @@ const renderAgentList = async () => {
   }
 };
 
-const onMessagePublish = (event: SubmitEvent) => {
+const onMessagePublish = async (event: SubmitEvent) => {
   event.preventDefault();
   const messageInput = document.querySelector(
     "form[name='new-message'] > input"
@@ -36,38 +37,43 @@ const onMessagePublish = (event: SubmitEvent) => {
       console.log("new message published", item);
 
       // Add to item map and store in storage.
-      items.set(computeHash(item), item);
-      storeItems(items, localStorage);
+      p2pClient.items.set(computeHash(item), item);
+      storeItems(p2pClient.items, localStorage);
 
       messageInput.value = "";
       renderMessageList();
 
       // Push to available peers.
-      pushItemToPeers(item);
+      const peers = await p2pClient.getAllPeers();
+      await Promise.all(
+        peers.map((peer) => p2pClient.pushToAgent(peer.id, [item]))
+      );
     }
   }
-};
-
-const pushItemToPeers = async (item: P2PItem) => {
-  return Promise.all(
-    peers.map((peer) => p2pClient.pushToAgent(peer.id, [item]))
-  );
 };
 
 const onIncomingPushMessage = (message: P2PMessage) => {
   if (message.type === P2PMessageType.Push) {
     console.debug("incoming push message", message);
-    message.data.items.forEach((item) => items.set(computeHash(item), item));
-    storeItems(items, localStorage);
+    storeItems(p2pClient.items, localStorage);
     renderMessageList();
+  }
+};
+
+const onIncomingFetchMessage = (message: P2PMessage) => {
+  if (message.type === P2PMessageType.Fetch) {
+    if (message.data.type === FetchMessageType.Respond) {
+      storeItems(p2pClient.items, localStorage);
+      renderMessageList();
+    }
   }
 };
 
 const renderMessageList = async () => {
   const messageList = document.querySelector("ul#message-list");
-  if (items.size > 0 && messageList instanceof HTMLUListElement) {
+  if (p2pClient.items.size > 0 && messageList instanceof HTMLUListElement) {
     messageList.textContent = "";
-    const itemsSorted = [...items]
+    const itemsSorted = [...p2pClient.items]
       .map(([_, item]) => item)
       .sort((a, b) => b.timestamp - a.timestamp);
     itemsSorted.forEach((message) => {
@@ -89,10 +95,6 @@ const main = async () => {
       newMessageForm.addEventListener("submit", onMessagePublish);
     }
 
-    // Get messages from local storage.
-    items = restoreItems(localStorage);
-    renderMessageList();
-
     // Connect client to signaling service.
     const agent: Agent = JSON.parse(agentInfoJson);
     agent.expiry = Date.now() + AGENT_EXPIRY_MS;
@@ -110,11 +112,20 @@ const main = async () => {
     // const url = new URL("ws://localhost:8787/");
     p2pClient = await P2PClient.connect(url, agent);
     p2pClient.setP2pMessageListener(P2PMessageType.Push, onIncomingPushMessage);
+    p2pClient.setP2pMessageListener(
+      P2PMessageType.Fetch,
+      onIncomingFetchMessage
+    );
+
+    // Get messages from local storage.
+    p2pClient.items = restoreItems(localStorage);
+    renderMessageList();
 
     try {
       // Announce agent every 10 seconds.
       await p2pClient.announce();
       window.setInterval(p2pClient.announce.bind(p2pClient), 10_000);
+
       // Get all agents every 5 seconds.
       await renderAgentList();
       window.setInterval(renderAgentList, 5000);

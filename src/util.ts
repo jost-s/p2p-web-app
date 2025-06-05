@@ -1,6 +1,5 @@
-import { Hash, P2PItem } from "p2p-client";
+import { Hash, Items, P2PItem } from "p2p-client";
 import { AgentId } from "p2p-signaling";
-import { Items } from "./types/item.js";
 import { P2PMessage, P2PMessageType } from "./types/message.js";
 import { Storage } from "./types/storage.js";
 

@@ -37,6 +37,46 @@
     }
   });
 
+  // ../p2p-client/node_modules/@roamhq/wrtc/lib/browser.js
+  var require_browser2 = __commonJS({
+    "../p2p-client/node_modules/@roamhq/wrtc/lib/browser.js"(exports) {
+      "use strict";
+      exports.MediaStream = window.MediaStream;
+      exports.MediaStreamTrack = window.MediaStreamTrack;
+      exports.RTCDataChannel = window.RTCDataChannel;
+      exports.RTCDataChannelEvent = window.RTCDataChannelEvent;
+      exports.RTCDtlsTransport = window.RTCDtlsTransport;
+      exports.RTCIceCandidate = window.RTCIceCandidate;
+      exports.RTCIceTransport = window.RTCIceTransport;
+      exports.RTCPeerConnection = window.RTCPeerConnection;
+      exports.RTCPeerConnectionIceEvent = window.RTCPeerConnectionIceEvent;
+      exports.RTCRtpReceiver = window.RTCRtpReceiver;
+      exports.RTCRtpSender = window.RTCRtpSender;
+      exports.RTCRtpTransceiver = window.RTCRtpTransceiver;
+      exports.RTCSctpTransport = window.RTCSctpTransport;
+      exports.RTCSessionDescription = window.RTCSessionDescription;
+      exports.getUserMedia = window.getUserMedia;
+      exports.mediaDevices = navigator.mediaDevices;
+    }
+  });
+
+  // ../p2p-client/lib/types/message.js
+  var P2PMessageType;
+  (function(P2PMessageType3) {
+    P2PMessageType3["Push"] = "p2p_push";
+    P2PMessageType3["Fetch"] = "p2p_fetch";
+  })(P2PMessageType || (P2PMessageType = {}));
+
+  // ../p2p-client/lib/types/fetch.js
+  var FetchMessageType;
+  (function(FetchMessageType2) {
+    FetchMessageType2["Request"] = "fetch_initiate";
+    FetchMessageType2["Respond"] = "fetch_respond";
+  })(FetchMessageType || (FetchMessageType = {}));
+
+  // ../p2p-client/lib/util.js
+  var computeHash = (item) => item.author + item.timestamp + item.content;
+
   // ../p2p-signaling/lib/types/message/request.js
   var RequestType;
   (function(RequestType2) {
@@ -263,28 +303,23 @@
   var import_ws = __toESM(require_browser(), 1);
   var MAX_EXPIRY_MS = 1e3 * 60 * 5;
 
-  // ../p2p-client/lib/types/message.js
-  var P2PMessageType;
-  (function(P2PMessageType3) {
-    P2PMessageType3["Push"] = "p2p_push";
-    P2PMessageType3["Sync"] = "p2p_sync";
-  })(P2PMessageType || (P2PMessageType = {}));
-
   // ../p2p-client/lib/connection.js
   var Peer = class {
     constructor(transport) {
       this.transport = transport;
     }
-    async push(items2) {
+    push(items) {
       const message = {
         type: P2PMessageType.Push,
-        data: { items: items2 }
+        data: { items }
       };
-      await this.transport.send(message);
+      this.transport.send(message);
     }
   };
 
   // ../p2p-client/lib/transport.js
+  var encodeP2pMessage = (message) => JSON.stringify(message);
+  var decodeP2pMessage = (message) => JSON.parse(message);
   var P2PTransport = class {
     constructor(dataChannel) {
       this.dataChannel = dataChannel;
@@ -295,8 +330,7 @@
         callback(message);
       });
     }
-    async send(message) {
-      console.log("real deal sending message", message);
+    send(message) {
       const encodedMessage = JSON.stringify(message);
       this.dataChannel.send(encodedMessage);
     }
@@ -310,6 +344,7 @@
       this.signalingClient = signalingClient;
       this.p2pMessageListeners = /* @__PURE__ */ new Map();
       this.rtcConnections = /* @__PURE__ */ new Map();
+      this.items = /* @__PURE__ */ new Map();
     }
     static async connect(url, agent) {
       const signalingClient = await SignalingClient.connect(url, agent);
@@ -317,19 +352,21 @@
       p2pClient2.listenToSignalingEvents();
       return p2pClient2;
     }
-    announce() {
+    async announce() {
       return this.signalingClient.announce();
     }
-    async getAllAgents() {
-      return this.signalingClient.getAllAgents();
+    async getAllPeers() {
+      const allAgents = await this.signalingClient.getAllAgents();
+      const peers = allAgents.filter((agent) => agent.id !== this.agent.id);
+      return peers;
     }
     setP2pMessageListener(type, listener) {
       this.p2pMessageListeners.set(type, listener);
     }
-    async pushToAgent(agentId, items2) {
+    async pushToAgent(agentId, items) {
       let existingConnection = this.rtcConnections.get(agentId);
       if (!existingConnection) {
-        existingConnection = this.createConnectionForAgent(agentId);
+        existingConnection = await this.createConnectionForAgent(agentId);
       }
       let dataChannel = existingConnection.dataChannel;
       if (!dataChannel) {
@@ -368,15 +405,22 @@
       });
       const transport = new P2PTransport(dataChannel);
       const connection = new Peer(transport);
-      await connection.push(items2);
+      connection.push(items);
+      await new Promise((resolve) => setTimeout(resolve, 100));
       dataChannel.close();
       existingConnection.rtc.close();
       this.rtcConnections.delete(agentId);
     }
-    createConnectionForAgent(agentId) {
-      const rtcConnection = new RTCPeerConnection({
-        iceServers: ICE_SERVERS
-      });
+    async createConnectionForAgent(agentId) {
+      let rtcConnection;
+      if (globalThis.RTCPeerConnection) {
+        rtcConnection = new globalThis.RTCPeerConnection({
+          iceServers: ICE_SERVERS
+        });
+      } else {
+        const wrtc = await Promise.resolve().then(() => __toESM(require_browser2(), 1));
+        rtcConnection = new wrtc.RTCPeerConnection({ iceServers: ICE_SERVERS });
+      }
       const connection = {
         rtc: rtcConnection,
         dataChannel: null,
@@ -388,9 +432,46 @@
     }
     listenForP2pMessage(dataChannel) {
       dataChannel.addEventListener("message", (event) => {
-        console.log("incoming event data", event.data);
-        const message = JSON.parse(event.data);
-        console.log("listening to message", message);
+        const message = decodeP2pMessage(event.data);
+        console.log("received p2p message", message);
+        if (message.type === P2PMessageType.Push) {
+          const items = message.data.items;
+          items.forEach((item) => {
+            const hash = computeHash(item);
+            if (!this.items.has(hash)) {
+              this.items.set(hash, item);
+            }
+          });
+        } else if (message.type === P2PMessageType.Fetch) {
+          if (message.data.type === FetchMessageType.Request) {
+            const { lastSync } = message.data.data;
+            const allItems = Array.from(this.items.values());
+            const items = lastSync ? allItems.filter((item) => item.timestamp > lastSync) : allItems;
+            const response = {
+              type: P2PMessageType.Fetch,
+              data: {
+                type: FetchMessageType.Respond,
+                data: {
+                  lastSync: performance.now(),
+                  items
+                }
+              }
+            };
+            dataChannel.send(encodeP2pMessage(response));
+          } else if (message.data.type === FetchMessageType.Respond) {
+            const items = message.data.data.items;
+            items.forEach((item) => {
+              const hash = computeHash(item);
+              if (!this.items.has(hash)) {
+                this.items.set(hash, item);
+              }
+            });
+          } else {
+            console.error("Unknown Sync message type", message);
+          }
+        } else {
+          console.error("Unknown Sync message", message);
+        }
         const listener = this.p2pMessageListeners.get(message.type);
         if (listener) {
           listener(message);
@@ -406,7 +487,7 @@
         const { sender, offer } = signalingMessage.signaling.data;
         console.info("received signaling offer from", sender);
         if (!this.rtcConnections.has(sender)) {
-          const connection = this.createConnectionForAgent(sender);
+          const connection = await this.createConnectionForAgent(sender);
           connection.rtc.addEventListener("datachannel", (event) => {
             console.debug("datachannel opened with", sender);
             const dataChannel = event.channel;
@@ -476,15 +557,8 @@
     }
   };
 
-  // ../p2p-client/lib/types/sync.js
-  var SyncMessageType;
-  (function(SyncMessageType2) {
-    SyncMessageType2["Initiate"] = "sync_initiate";
-    SyncMessageType2["Respond"] = "sync_respond";
-  })(SyncMessageType || (SyncMessageType = {}));
-
   // src/util.ts
-  var computeHash = (item) => {
+  var computeHash2 = (item) => {
     return item.timestamp + item.author + item.content.substring(item.content.length - 4);
   };
   var makeItem = (author, content) => ({
@@ -492,8 +566,8 @@
     timestamp: Date.now(),
     content
   });
-  var storeItems = (items2, storage) => {
-    const itemArray = [...items2].map(([_, item]) => item);
+  var storeItems = (items, storage) => {
+    const itemArray = [...items].map(([_, item]) => item);
     const itemArrayJson = JSON.stringify(itemArray);
     storage.setItem("items", itemArrayJson);
   };
@@ -501,11 +575,11 @@
     const itemArrayJson = storage.getItem("items");
     if (itemArrayJson) {
       const itemArray = JSON.parse(itemArrayJson);
-      const items2 = itemArray.map((item) => [
-        computeHash(item),
+      const items = itemArray.map((item) => [
+        computeHash2(item),
         item
       ]);
-      return new Map(items2);
+      return new Map(items);
     }
     return /* @__PURE__ */ new Map();
   };
@@ -513,11 +587,8 @@
   // src/peer-connection.ts
   var AGENT_EXPIRY_MS = 1e3 * 30;
   var p2pClient;
-  var peers;
-  var items = /* @__PURE__ */ new Map();
   var renderAgentList = async () => {
-    const allAgents = await p2pClient.getAllAgents();
-    peers = allAgents.filter((agent) => agent.id !== p2pClient.agent.id);
+    const peers = await p2pClient.getAllPeers();
     const agentList = document.querySelector("ul#agent-list");
     if (peers.length > 0 && agentList instanceof HTMLUListElement) {
       agentList.textContent = "";
@@ -530,7 +601,7 @@
       });
     }
   };
-  var onMessagePublish = (event) => {
+  var onMessagePublish = async (event) => {
     event.preventDefault();
     const messageInput = document.querySelector(
       "form[name='new-message'] > input"
@@ -539,32 +610,37 @@
       if (messageInput.value) {
         const item = makeItem(p2pClient.agent.id, messageInput.value);
         console.log("new message published", item);
-        items.set(computeHash(item), item);
-        storeItems(items, localStorage);
+        p2pClient.items.set(computeHash2(item), item);
+        storeItems(p2pClient.items, localStorage);
         messageInput.value = "";
         renderMessageList();
-        pushItemToPeers(item);
+        const peers = await p2pClient.getAllPeers();
+        await Promise.all(
+          peers.map((peer) => p2pClient.pushToAgent(peer.id, [item]))
+        );
       }
     }
-  };
-  var pushItemToPeers = async (item) => {
-    return Promise.all(
-      peers.map((peer) => p2pClient.pushToAgent(peer.id, [item]))
-    );
   };
   var onIncomingPushMessage = (message) => {
     if (message.type === P2PMessageType.Push) {
       console.debug("incoming push message", message);
-      message.data.items.forEach((item) => items.set(computeHash(item), item));
-      storeItems(items, localStorage);
+      storeItems(p2pClient.items, localStorage);
       renderMessageList();
+    }
+  };
+  var onIncomingFetchMessage = (message) => {
+    if (message.type === P2PMessageType.Fetch) {
+      if (message.data.type === FetchMessageType.Respond) {
+        storeItems(p2pClient.items, localStorage);
+        renderMessageList();
+      }
     }
   };
   var renderMessageList = async () => {
     const messageList = document.querySelector("ul#message-list");
-    if (items.size > 0 && messageList instanceof HTMLUListElement) {
+    if (p2pClient.items.size > 0 && messageList instanceof HTMLUListElement) {
       messageList.textContent = "";
-      const itemsSorted = [...items].map(([_, item]) => item).sort((a, b) => b.timestamp - a.timestamp);
+      const itemsSorted = [...p2pClient.items].map(([_, item]) => item).sort((a, b) => b.timestamp - a.timestamp);
       itemsSorted.forEach((message) => {
         const listItem = document.createElement("li");
         const clientLabel = document.createElement("label");
@@ -581,8 +657,6 @@
       if (newMessageForm instanceof HTMLFormElement) {
         newMessageForm.addEventListener("submit", onMessagePublish);
       }
-      items = restoreItems(localStorage);
-      renderMessageList();
       const agent = JSON.parse(agentInfoJson);
       agent.expiry = Date.now() + AGENT_EXPIRY_MS;
       const agentNameInput = document.querySelector("input#agent-name");
@@ -596,6 +670,12 @@
       const url = new URL("wss://p2p-signaling-server.jost-schulte.workers.dev/");
       p2pClient = await P2PClient.connect(url, agent);
       p2pClient.setP2pMessageListener(P2PMessageType.Push, onIncomingPushMessage);
+      p2pClient.setP2pMessageListener(
+        P2PMessageType.Fetch,
+        onIncomingFetchMessage
+      );
+      p2pClient.items = restoreItems(localStorage);
+      renderMessageList();
       try {
         await p2pClient.announce();
         window.setInterval(p2pClient.announce.bind(p2pClient), 1e4);
